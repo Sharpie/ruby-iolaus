@@ -1,9 +1,13 @@
 require 'singleton'
+require 'time'
 require 'thread'
+require 'uri'
 
 require 'concurrent'
+require 'typhoeus'
 
 require 'iolaus/handlers'
+require 'iolaus/util/http'
 
 # Throttle parallel execution in response to server errors
 #
@@ -22,25 +26,58 @@ require 'iolaus/handlers'
 # domain.
 class Iolaus::Handlers::Throttle
   include Singleton
+  include Iolaus::Util::HTTP
+
+  # The HTTP status codes for which a Retry-After header will be checked
+  #
+  # @return [Array<Integer>]
+  RETRY_STATUSES = [429, 503]
 
   def initialize
     @lock = Mutex.new
     @state = {}
   end
 
-  # Wait for any pending timers to complete on a URL
+  # Handler for Typhoeus.before that checks for pending timers
   #
-  # @param hostname [String] A string containing the hostname to check for
-  #   pending timers.
+  # @param request [Typhoeus::Request] A Typhoeus request instance.
   #
-  # @return [void] Returns immediately if no active timer is present. Returns
-  #   after sleeping if a timer is counting down.
-  def wait_for(hostname)
-    timer = @lock.synchronize { @state[hostname] }
+  # @return [true]
+  def handle_before(request)
+    hostname = hostname_for(request)
 
-    return if timer.nil? || timer.complete?
+    # No-op in case of unparsable request URL.
+    return true if hostname.nil?
 
-    timer.wait
+    wait_for(hostname)
+    true
+  end
+
+  # Check a Typhoeus::Response for 429 or 503 error codes
+  #
+  # This handler checks a Typhoeus::Response instance for 429 or 503 error
+  # codes that include a `Retry-After` header. If the code and headers are
+  # matched, then a timer is set for the hostname of the request.
+  #
+  # @param response [Typhoeus::Response] A response to a Typhoeus::Request.
+  #
+  # @return [Typhoeus::Response] The response instance, unmodified.
+  def handle_response(response)
+    return response unless RETRY_STATUSES.include?(response.response_code)
+
+    retry_at = compute_retry_at(response.headers['Date'],
+                                response.headers['Retry-After'])
+    return response if retry_at.nil?
+
+    hostname = hostname_for(response.request)
+    # No-op in case of unparsable request URL.
+    return response if hostname.nil?
+
+    set_timer(hostname, retry_at)
+    # Send the request back to the queue.
+    response.request.hydra.queue(response.request)
+
+    response
   end
 
   # Set a timer on a URL
@@ -55,17 +92,20 @@ class Iolaus::Handlers::Throttle
   #
   # @param hostname [String] A string containing the hostname to set the
   #   timer on.
-  # @param retry_after [Number] The number of seconds to wait as a floating
-  #   point value.
+  # @param retry_at [Time] A time at which requests should be retried. It is
+  #   critically important that this value be calculated using external data
+  #   sources, such as the `Date` and `Retry-After` headers of a HTTP response.
+  #   Otherwise, the Ruby Global VM Lock may interoduce unexpected drift.
   #
-  # @return [Concurrent::ScheduledTask] The timer currently set for the
-  #   hostname.
-  def set_timer(hostname, retry_after)
+  # @return [Concurrent::ScheduledTask<Time>] The timer currently set for the
+  #   hostname. The `value` method should return the Time at which the timer
+  #   finished waiting.
+  def set_timer(hostname, retry_at)
     @lock.synchronize do
       timer = @state[hostname]
 
-      if timer.nil? || timer.complete?
-        timer = create_timer(retry_after)
+      if timer.nil? || (timer.complete? && (timer.value < retry_at))
+        timer = create_timer(retry_at - Time.now)
         @state[hostname] = timer
       end
 
@@ -73,11 +113,43 @@ class Iolaus::Handlers::Throttle
     end
   end
 
+  # Wait for any pending timers to complete on a hostname
+  #
+  # @param hostname [String] A string containing the hostname to check for
+  #   pending timers.
+  #
+  # @return [void] Returns immediately if no active timer is present. Returns
+  #   after sleeping if a timer is counting down.
+  def wait_for(hostname)
+    timer = @lock.synchronize { @state[hostname] }
+
+    return if timer.nil? || timer.complete?
+
+    timer.wait
+  end
+
   private
 
   def create_timer(wait_secs)
     # NOTE: Add an extra second to ensure we wait long enough for an API
     #       rate limit to reset.
-    Concurrent::ScheduledTask.execute(wait_secs + 1.0) { wait_secs }
+    wait = [(wait_secs + 1.0), 0.0].max
+    Concurrent::ScheduledTask.execute(wait) { Time.now }
+  end
+
+  def hostname_for(request)
+    url = case request.base_url
+          when String
+            URI.parse(request.base_url) rescue nil
+          when URI
+            request.base_url
+          else
+            nil
+          end
+
+    # FIXME: Log a warning if nil as something has gone weird.
+    (url.nil?) ? nil : url.hostname
   end
 end
+
+Typhoeus.before.unshift(Iolaus::Handlers::Throttle.instance.method(:handle_before))
