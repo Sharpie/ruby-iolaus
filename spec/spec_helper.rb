@@ -12,3 +12,23 @@ RSpec.configure do |config|
     c.syntax = :expect
   end
 end
+
+require_relative 'lib/test_server'
+RSpec.shared_context 'test_server' do
+  before(:each) do
+    settings = @test_server_settings || {}
+    @test_server = Thread.new do
+      Iolaus::TestServer.run!(@test_server_settings)
+    end
+
+    until Iolaus::TestServer.running? do
+      sleep(0.1)
+    end
+  end
+
+  after(:each) do
+    Iolaus::TestServer.stop!
+    @test_server.join
+    Iolaus::TestServer.reset!
+  end
+end
