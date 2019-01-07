@@ -113,6 +113,14 @@ class Iolaus::Handlers::Throttle
     end
   end
 
+  # Return any pending timer set for a hostname
+  #
+  # @return [Concurrent::ScheduledTask<Time>, nil] The timer currently set
+  #  for the hostname, if one exists.
+  def get_timer(hostname)
+    @lock.synchronize { @state[hostname] }
+  end
+
   # Wait for any pending timers to complete on a hostname
   #
   # @param hostname [String] A string containing the hostname to check for
@@ -121,7 +129,7 @@ class Iolaus::Handlers::Throttle
   # @return [void] Returns immediately if no active timer is present. Returns
   #   after sleeping if a timer is counting down.
   def wait_for(hostname)
-    timer = @lock.synchronize { @state[hostname] }
+    timer = get_timer(hostname)
 
     return if timer.nil? || timer.complete?
 
