@@ -33,3 +33,14 @@ RSpec.shared_context 'test_server' do
     Iolaus::TestServer.reset!
   end
 end
+
+RSpec.shared_context 'stub_http_requests' do
+  before(:each) do
+    Typhoeus::Config.block_connection = true
+  end
+
+  after(:each) do
+    Typhoeus::Config.block_connection = false
+    Typhoeus::Expectation.clear
+  end
+end
