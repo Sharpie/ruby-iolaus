@@ -1,8 +1,8 @@
 require 'spec_helper'
-require 'typhoeus'
-require 'iolaus/handlers/throttle'
 
-RSpec.describe(Iolaus::Handlers::Throttle) do
+require 'iolaus/handler/throttle'
+
+RSpec.describe(Iolaus::Handler::Throttle) do
   subject { described_class.instance }
 
   context 'when submitting more requests than a server will allow' do
@@ -31,7 +31,7 @@ RSpec.describe(Iolaus::Handlers::Throttle) do
       sleep(0.5)
 
       timer = subject.get_timer('127.0.0.1')
-      expect(timer).not_to be_complete
+      expect(timer).not_to be_resolved
 
       # Wait for requests to complete.
       runner.join

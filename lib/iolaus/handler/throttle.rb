@@ -3,10 +3,10 @@ require 'time'
 require 'thread'
 require 'uri'
 
-require 'concurrent'
+require 'concurrent/promises'
 require 'typhoeus'
 
-require 'iolaus/handlers'
+require 'iolaus/handler'
 require 'iolaus/util/http'
 
 # Throttle parallel execution in response to server errors
@@ -24,7 +24,7 @@ require 'iolaus/util/http'
 # This means an entire `Typhoeus::Hydra` can fill up with waiting requests.
 # The impact of this can be mitigated by using a seperate Hydra for each
 # domain.
-class Iolaus::Handlers::Throttle
+class Iolaus::Handler::Throttle < Iolaus::Handler
   include Singleton
   include Iolaus::Util::HTTP
 
@@ -52,6 +52,8 @@ class Iolaus::Handlers::Throttle
     wait_for(hostname)
     true
   end
+  # FIXME: Re-name the method to handle_request and drop handle_before
+  alias_method :handle_request, :handle_before
 
   # Check a Typhoeus::Response for 429 or 503 error codes
   #
@@ -104,7 +106,7 @@ class Iolaus::Handlers::Throttle
     @lock.synchronize do
       timer = @state[hostname]
 
-      if timer.nil? || (timer.complete? && (timer.value < retry_at))
+      if timer.nil? || (timer.resolved? && (timer.value < retry_at))
         timer = create_timer(retry_at - Time.now)
         @state[hostname] = timer
       end
@@ -131,7 +133,7 @@ class Iolaus::Handlers::Throttle
   def wait_for(hostname)
     timer = get_timer(hostname)
 
-    return if timer.nil? || timer.complete?
+    return if timer.nil? || timer.resolved?
 
     timer.wait
   end
@@ -142,7 +144,7 @@ class Iolaus::Handlers::Throttle
     # NOTE: Add an extra second to ensure we wait long enough for an API
     #       rate limit to reset.
     wait = [(wait_secs + 1.0), 0.0].max
-    Concurrent::ScheduledTask.execute(wait) { Time.now }
+    Concurrent::Promises.schedule(wait) { Time.now }
   end
 
   def hostname_for(request)
@@ -160,4 +162,4 @@ class Iolaus::Handlers::Throttle
   end
 end
 
-Typhoeus.before.unshift(Iolaus::Handlers::Throttle.instance.method(:handle_before))
+Typhoeus.before.unshift(Iolaus::Handler::Throttle.instance.method(:handle_before))

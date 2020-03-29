@@ -1,6 +1,6 @@
-require 'iolaus/handlers/throttle'
+require 'iolaus/handler/throttle'
 
-RSpec.describe(Iolaus::Handlers::Throttle) do
+RSpec.describe(Iolaus::Handler::Throttle) do
   subject { described_class.instance }
 
   it 'registers its self as a Typhoeus.before handler' do
