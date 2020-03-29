@@ -1,5 +1,6 @@
 require 'bundler/setup'
 require 'iolaus'
+require 'typhoeus'
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
